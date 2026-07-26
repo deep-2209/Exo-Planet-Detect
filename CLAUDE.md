@@ -103,5 +103,7 @@ Just starting. No code written yet. Environment not yet set up.
 
 ## Log of Major Decisions
 
-(We'll append architectural decisions here as we make them, with brief
-reasoning, so future sessions have the "why" in one place.)
+- 2026-07-27 — Toolchain: Python 3.12 + uv. Chose 3.12 for broadest wheel
+coverage (avoiding 3.14's packaging rough edges); chose uv over conda
+because GPU training lives on AWS, so local needs only CPU PyTorch, which
+installs cleanly from PyPI wheels — removing conda's native-binary advantage.
