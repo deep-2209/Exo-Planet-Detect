@@ -1,0 +1,99 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments (never commit an env; it's machine-specific and huge)
+.venv/
+venv/
+env/
+
+# Environment variables / secrets (API keys, DB URLs, credentials)
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Jupyter / notebooks
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Machine learning artifacts
+# Data and trained models are large and/or reproducible — keep them out of git.
+# Use a data-versioning tool or object storage (e.g. S3) instead.
+# ---------------------------------------------------------------------------
+data/
+!data/.gitkeep
+
+# Raw light-curve files (Kepler/TESS light curves ship as FITS)
+*.fits
+
+# Trained models / checkpoints / serialized objects
+models/
+checkpoints/
+*.h5
+*.hdf5
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.onnx
+
+# Experiment tracking / run outputs
+mlruns/
+wandb/
+runs/
+outputs/
+logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# AWS / Terraform
+# ---------------------------------------------------------------------------
+# Terraform working dir and provider plugins
+.terraform/
+# State files can contain secrets and machine-specific data — never commit
+*.tfstate
+*.tfstate.*
+# Variable files often hold secrets; commit a *.tfvars.example instead
+*.tfvars
+!*.tfvars.example
+# Crash logs and generated plans
+crash.log
+crash.*.log
+*.tfplan
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — it should be committed.
+
+# AWS credentials (should never live in the repo, but guard anyway)
+.aws/
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---------------------------------------------------------------------------
+# OS cruft
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Personal workflow notes (not part of the project)
+# ---------------------------------------------------------------------------
+ignore.txt
