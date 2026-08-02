@@ -97,3 +97,6 @@ Thumbs.db
 # Personal workflow notes (not part of the project)
 # ---------------------------------------------------------------------------
 ignore.txt
+
+# Exploration plot artifacts
+*.png
