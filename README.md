@@ -3,7 +3,8 @@
 Deep learning classification of NASA Kepler transit candidates: given a star's
 phase-folded light curve, predict whether it hosts a real planet or is a false
 positive. A 1D CNN is benchmarked against a classical detection baseline on
-real telescope data with leakage-controlled, multi-seed evaluation.
+real telescope data, with leakage-controlled, multi-seed evaluation and a
+reproducible, infrastructure-as-code training pipeline on AWS.
 
 ## Results
 
@@ -55,29 +56,86 @@ Kepler Objects of Interest (KOI) `koi_disposition` as ground-truth labels.
   principled architectural change didn't move it — indicating the ceiling is
   **data/SNR-limited, not model-capacity-limited.**
 
+## Cloud training pipeline (AWS)
+
+Training is operationalized as a reproducible, **infrastructure-as-code**
+pipeline on **AWS SageMaker** — not because a 2-minute CPU model needs cloud
+scale, but to demonstrate production-style, reproducible training infrastructure
+instead of ad-hoc local runs.
+
+**What it does.** Terraform provisions the durable infrastructure — an S3 bucket
+for the dataset and model/metric artifacts, and a least-privilege IAM role that
+SageMaker assumes. A launch script (SageMaker Python SDK) uploads the dataset to
+S3 and starts a managed-PyTorch **training job in script mode**: SageMaker spins
+up ephemeral compute, runs the training container, writes the trained model
+(`model.tar.gz`) and metrics back to S3, and tears the compute down
+automatically. CloudWatch captures the run logs.
+
+**Why SageMaker (over EC2 / Fargate).** SageMaker is the ML-native service:
+training jobs are ephemeral by design — compute exists only for the duration of
+the run, making it the lowest-cost and lowest-footgun option (nothing is left
+running to bill). Script mode runs the existing training code inside a managed,
+dependency-pinned container with no custom Docker image to build or maintain.
+EC2 would mean hand-managing instance lifecycle; Fargate would work but adds
+nothing ML-specific.
+
+**Design choices.**
+- *Infrastructure as code* — the entire environment is defined in Terraform,
+  reproducible with `terraform apply` and removed cleanly with `terraform destroy`.
+- *Least-privilege IAM* — the execution role is scoped to just this bucket,
+  SageMaker log groups, and read-only image pulls, not broad admin access.
+- *Separation of concerns* — Terraform owns durable infrastructure; the training
+  job, an ephemeral action, is launched via the SDK. This mirrors how ML
+  training is orchestrated in practice.
+
+**What it demonstrates.** The pipeline turns "it trained on my laptop" into a
+reproducible, versioned, auditable workflow: data and artifacts live in S3, the
+environment is pinned and recreatable, the run is logged to CloudWatch, and the
+whole stack is one command to stand up and one to tear down. It bridges ML and
+cloud infrastructure, and the same pattern scales directly to larger models and
+datasets without re-architecting.
+
+**Run it:**
+```bash
+cd infra && terraform apply        # provision S3 bucket + SageMaker IAM role
+cd ..
+uv run python launch_sagemaker.py --bucket <bucket_name> --role_arn <role_arn>
+cd infra && terraform destroy      # tear everything down when finished
+```
+
 ## Tech stack
 
 Python 3.12 · [uv](https://docs.astral.sh/uv/) (env + dependencies) ·
 [lightkurve](https://lightkurve.github.io/lightkurve/) (Kepler data) ·
-PyTorch (CNN) · scikit-learn (metrics, splits) · ruff (lint + format).
+PyTorch (CNN) · scikit-learn (metrics, splits) · ruff (lint + format) ·
+**AWS SageMaker** (managed training) · **Terraform** (infrastructure as code) ·
+SageMaker Python SDK / boto3 (job orchestration).
 
 ## Repository layout
 
 ```
-build_dataset.py       # fetch Kepler light curves + KOI labels -> phase-folded dataset
-baseline_bls.py        # classical box-fit baseline
-train_cnn.py           # 1D CNN: 5-seed training + evaluation
-koi_table.csv          # cached NASA KOI label snapshot (reproducibility)
-cnn_results.json       # final model metrics
-baseline_results.json  # baseline metrics
-CLAUDE.md              # project conventions + log of major decisions
-pyproject.toml         # dependencies, pinned via uv.lock
+build_dataset.py           # fetch Kepler light curves + KOI labels -> phase-folded dataset
+baseline_bls.py            # classical box-fit baseline
+train_cnn.py               # 1D CNN: 5-seed training + evaluation (local)
+launch_sagemaker.py        # SDK launcher: upload data to S3 + run the SageMaker job
+sagemaker/
+  train.py                 # SageMaker script-mode training entrypoint
+  requirements.txt         # extra deps installed into the training container
+infra/
+  main.tf                  # Terraform: S3 bucket + SageMaker execution role
+  variables.tf
+  outputs.tf
+koi_table.csv              # cached NASA KOI label snapshot (reproducibility)
+cnn_results.json           # final model metrics
+baseline_results.json      # baseline metrics
+CLAUDE.md                  # project conventions + log of major decisions
+pyproject.toml             # dependencies, pinned via uv.lock
 ```
 
-*Generated data (`dataset.npz`, download cache) is git-ignored and rebuilt by
-`build_dataset.py`.*
+*Generated data (`dataset.npz`, download cache) and Terraform state are
+git-ignored.*
 
-## Reproduce
+## Reproduce (local)
 
 ```bash
 uv sync
@@ -85,14 +143,15 @@ uv run python build_dataset.py   # builds dataset.npz (downloads from MAST — s
 uv run python baseline_bls.py    # -> baseline_results.json
 uv run python train_cnn.py       # -> cnn_results.json
 ```
+For the cloud training pipeline, see **Cloud training pipeline (AWS)** above.
 
 ## Roadmap
 
 - [x] Data pipeline — Kepler light curves + KOI labels → phase-folded dataset
 - [x] Classical box-fit (BLS-style) baseline
 - [x] 1D CNN classifier with leakage-controlled, multi-seed evaluation
-- [ ] **AWS + Terraform training pipeline** — cloud-native, reproducible training
-      provisioned as infrastructure-as-code
+- [x] **AWS + Terraform training pipeline** — reproducible, IaC-provisioned
+      SageMaker training with artifacts in S3
 - [ ] **Interactive dashboard** — explore light curves and model predictions
 - [ ] All-quarters stitching per star for higher signal-to-noise
 
