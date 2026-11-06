@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "lightkurve>=2.6.0",
+    "pandas>=2.3.3",
+    "scikit-learn>=1.9.0",
+    "torch>=2.15.0",
 ]
 
 [dependency-groups]

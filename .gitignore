@@ -23,6 +23,16 @@ env/
 .env.*
 !.env.example
 
+.venv/
+__pycache__/
+*.npz
+views_cache/
+*.png
+.env
+*.tfstate
+*.tfstate.*
+*.tfvars
+
 # ---------------------------------------------------------------------------
 # Jupyter / notebooks
 # ---------------------------------------------------------------------------
@@ -100,3 +110,6 @@ ignore.txt
 
 # Exploration plot artifacts
 *.png
+
+# Datasets
+*.npz
