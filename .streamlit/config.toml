@@ -1,0 +1,11 @@
+# Streamlit theme for the Exo-Detect dashboard (picked up when you run
+# `uv run streamlit run dashboard/app.py` from the repo root).
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0b0f1a"
+secondaryBackgroundColor = "#141a2a"
+textColor = "#e8eaf0"
+
+[client]
+toolbarMode = "minimal"

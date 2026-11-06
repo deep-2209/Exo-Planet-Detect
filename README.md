@@ -4,7 +4,13 @@ Deep learning classification of NASA Kepler transit candidates: given a star's
 phase-folded light curve, predict whether it hosts a real planet or is a false
 positive. A 1D CNN is benchmarked against a classical detection baseline on
 real telescope data, with leakage-controlled, multi-seed evaluation and a
-reproducible, infrastructure-as-code training pipeline on AWS.
+reproducible, infrastructure-as-code training pipeline on AWS. An interactive
+**Streamlit dashboard** lets you explore individual stars, watch the model and
+baseline make their calls live, and look inside the network.
+
+<!-- TODO: replace with the Streamlit Community Cloud URL once deployed:
+[![Live demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://<your-app>.streamlit.app) -->
+**Live demo:** *coming soon* · **Run locally:** `uv run streamlit run dashboard/app.py`
 
 ## Results
 
@@ -55,6 +61,39 @@ Kepler Objects of Interest (KOI) `koi_disposition` as ground-truth labels.
 - Performance plateaus around ROC-AUC 0.69 with train ≈ validation loss, and a
   principled architectural change didn't move it — indicating the ceiling is
   **data/SNR-limited, not model-capacity-limited.**
+
+## Interactive dashboard
+
+A Streamlit + Plotly app (`dashboard/`) presents the project as a product
+rather than a notebook. Every chart is interactive (hover, zoom, pan), and the
+CNN runs **live**: the app loads `model.pth` once and does a real forward pass
+for each star you pick.
+
+| Page | What it provides |
+|------|------------------|
+| 🌌 **Overview** | Plain-language intro to transits, the planet-vs-false-positive task and phase folding, headline stats (dataset size, class balance, CNN vs baseline ROC-AUC), a schematic transit plot, and a pipeline diagram (Kepler data → labels → preprocessing → split → CNN / baseline → evaluation). |
+| 🔭 **Explore a light curve** | Pick any of the 426 held-out test stars (filter by class, or 🎲 pick a random one). Shows the global view (one full orbit) with the baseline's best box shaded, the zoomed local view, the true NASA disposition, the CNN's probability on a confidence gauge with a clear planet / false-positive verdict, and the baseline's box-fit SNR. Three tabs add motion and context: an **animated phase-folding** demo, an **animated box sweep** of the baseline over box widths 5–41 (with SNR per width), and histograms showing where this star's scores sit in the whole test set. Links to the star's NASA Exoplanet Archive page. |
+| 📊 **Model vs baseline** | Comparison table (ROC-AUC, PR-AUC, precision, recall, F1) for the 5-seed CNN, the deployed `model.pth`, the baseline, and random guessing. Includes bar charts with ±std error bars and chance lines, plus ROC and precision-recall curves recomputed live from `model.pth` on the test set. |
+| 🧠 **CNN architecture** | A layer-by-layer diagram of `TransitCNN` from the 1×201 input to P(planet), with output shapes measured from the loaded network and parameter counts (13,057 total). Also a chart of length shrinking as channels grow, plain-language cards on convolutions, pooling and the classifier, and **live feature-map heatmaps** showing what each conv block responds to for the selected star. |
+| 🧪 **Try any star** *(experimental)* | Enter any KIC id. Period and epoch auto-fill from the KOI table, or you can type them. The app downloads the light curve live from MAST, runs the same preprocessing as training (remove NaNs → normalise → flatten → phase-fold → resample to 201) and classifies it. It warns you if the star is already in the training data. If MAST is slow or unavailable you get a friendly error. |
+
+**How the dashboard makes its calls.** Inputs use the exact training
+normalisation, `(x − 1) / std(X_train − 1)`. The planet/false-positive verdict
+uses the decision threshold that maximises F1 on the **validation** set (≈ 0.415
+for `model.pth`), the same rule training used. It isn't 0.5 because this model's
+probabilities are compressed (test-set max ≈ 0.60), so 0.5 would call almost
+everything a false positive. The baseline uses the box-fit SNR from
+`baseline_bls.py`.
+
+**Deployed model vs headline numbers.** `model.pth` is the single SageMaker run
+(test ROC-AUC 0.629, PR-AUC 0.566). The Results table above reports the 5-seed
+mean of the same global-view architecture trained locally (0.687 ± 0.005). The
+dashboard shows both side by side so the numbers are never mixed up.
+
+```bash
+uv sync
+uv run streamlit run dashboard/app.py     # needs dataset.npz + model.pth in the repo root
+```
 
 ## Cloud training pipeline (AWS)
 
@@ -109,7 +148,8 @@ Python 3.12 · [uv](https://docs.astral.sh/uv/) (env + dependencies) ·
 [lightkurve](https://lightkurve.github.io/lightkurve/) (Kepler data) ·
 PyTorch (CNN) · scikit-learn (metrics, splits) · ruff (lint + format) ·
 **AWS SageMaker** (managed training) · **Terraform** (infrastructure as code) ·
-SageMaker Python SDK / boto3 (job orchestration).
+SageMaker Python SDK / boto3 (job orchestration) · **Streamlit** + **Plotly**
+(interactive dashboard).
 
 ## Repository layout
 
@@ -125,9 +165,17 @@ infra/
   main.tf                  # Terraform: S3 bucket + SageMaker execution role
   variables.tf
   outputs.tf
+dashboard/
+  app.py                   # Streamlit app: pages, charts, animations
+  model.py                 # TransitCNN, normalisation, box-SNR baseline, light-curve folding
+.streamlit/config.toml     # dashboard theme
 koi_table.csv              # cached NASA KOI label snapshot (reproducibility)
-cnn_results.json           # final model metrics
-baseline_results.json      # baseline metrics
+model.pth                  # trained global-view CNN weights (from the SageMaker run)
+cnn_results.json           # metrics of the SageMaker run that produced model.pth
+results/
+  cnn_results_without_local_view.json  # final global-view CNN, 5 seeds (headline numbers)
+  cnn_results.json                     # dual-view (global + local) experiment, 5 seeds
+  baseline_results.json                # classical baseline metrics
 CLAUDE.md                  # project conventions + log of major decisions
 pyproject.toml             # dependencies, pinned via uv.lock
 ```
@@ -142,6 +190,7 @@ uv sync
 uv run python build_dataset.py   # builds dataset.npz (downloads from MAST — slow on first run)
 uv run python baseline_bls.py    # -> baseline_results.json
 uv run python train_cnn.py       # -> cnn_results.json
+uv run streamlit run dashboard/app.py   # open the interactive dashboard
 ```
 For the cloud training pipeline, see **Cloud training pipeline (AWS)** above.
 
@@ -152,7 +201,9 @@ For the cloud training pipeline, see **Cloud training pipeline (AWS)** above.
 - [x] 1D CNN classifier with leakage-controlled, multi-seed evaluation
 - [x] **AWS + Terraform training pipeline** — reproducible, IaC-provisioned
       SageMaker training with artifacts in S3
-- [ ] **Interactive dashboard** — explore light curves and model predictions
+- [x] **Interactive dashboard**: explore light curves, live CNN predictions,
+      CNN vs baseline, architecture, and live MAST lookups (Streamlit + Plotly)
+- [ ] Public deployment of the dashboard (Streamlit Community Cloud)
 - [ ] All-quarters stitching per star for higher signal-to-noise
 
 ## Limitations
