@@ -45,14 +45,27 @@ recall 0.96, F1 0.73 at the validation-tuned threshold.*
 
 **Read this as a promising signal, not a new headline number.** The point
 estimate is higher than the single-quarter dual-view model (0.66), even though
-it was trained on ~14× fewer stars — consistent with the idea that more folded
-transits means cleaner shape. But the test set is only **30 stars**: the seed
-std (±0.04) captures training randomness only, while the sampling uncertainty
-of an AUC on 15 + 15 stars is about **±0.17 (95 %)**. The pilot's test set also
-differs from the 426-star one, and no global-view-only all-quarters run exists
-yet, so the gain cannot be attributed to the local view versus the extra
-quarters. The headline result and the dashboard's `model.pth` remain the
+it was trained on ~14× fewer stars. But the test set is only **30 stars**: the
+seed std (±0.04) captures training randomness only, while the sampling
+uncertainty of an AUC on 15 + 15 stars is about **±0.17 (95 %)**. The pilot's
+test set also differs from the 426-star one, and no global-view-only all-quarters
+run exists yet, so the gain cannot be attributed to the local view versus the
+extra quarters. The headline result and the dashboard's `model.pth` remain the
 single-quarter global-view model, which was evaluated on 426 stars.
+
+**A diagnostic worth knowing about.** Stitching all quarters gives each phase bin
+hundreds of data points instead of a handful, so the folded curve *should* get
+much quieter. It doesn't: across the 192 pilot stars that also exist in the
+single-quarter dataset, the median out-of-transit noise of the 201-point view is
+essentially unchanged (ratio 1.03; only 40 % of stars improved). The cause is
+the folding step, which resamples with `np.interp` and so reads roughly one noisy
+point per bin instead of averaging them. A one-star check on Kepler-8 confirmed
+it: points per bin rose from ~2 to ~325 with no drop in the interpolated view's
+noise (≈1.6e-4 vs 1.4e-4 single-quarter), whereas a per-bin average of the same
+points gave ≈1.3e-5, about 11× lower. So the pilot's score has **not yet
+benefited from the extra signal-to-noise**; bin-averaging in the folding step is
+the first thing to try next. (The dashboard's *All-quarters pilot* page shows this
+comparison live.)
 
 ## Problem
 
@@ -76,7 +89,8 @@ Kepler Objects of Interest (KOI) `koi_disposition` as ground-truth labels.
   (time-flip, phase-shift, noise).
 - **All-quarters option:** `dataset/build_dataset_all_quarters.py` downloads every
   quarter per star, stitches them, then flattens and folds — more transits per
-  fold, but ~1–2 min per star, so the pilot is limited to 200 stars.
+  fold, but ~1–2 min per star, so the pilot is limited to 200 stars. (Its
+  resampling step interpolates rather than bin-averages; see the diagnostic above.)
 - **Evaluation:** star-level stratified 70/15/15 split, 5 seeds, metrics
   reported as mean ± std. Threshold-free AUCs are the headline metrics.
 
@@ -91,10 +105,13 @@ Kepler Objects of Interest (KOI) `koi_disposition` as ground-truth labels.
 - Performance plateaus around ROC-AUC 0.69 with train ≈ validation loss, and a
   principled architectural change didn't move it — indicating the ceiling is
   **data/SNR-limited, not model-capacity-limited.**
-- **Early evidence for that hypothesis:** with all quarters stitched, a
-  dual-view CNN trained on just 139 stars reaches ROC-AUC 0.763 ± 0.038 on a
-  30-star pilot test set (vs 0.66 single-quarter). The test set is too small to
-  call this conclusive (≈ ±0.17 at 95 %); a larger all-quarters run is the next step.
+- **All-quarters pilot: encouraging but inconclusive.** With all quarters
+  stitched, a dual-view CNN trained on just 139 stars reaches ROC-AUC
+  0.763 ± 0.038 on a 30-star test set (vs 0.66 single-quarter), but that test
+  set is too small to conclude anything (≈ ±0.17 at 95 %). Moreover the pilot's
+  folded curves are *not* measurably less noisy than single-quarter ones, because
+  the resampling step interpolates instead of averaging. The SNR hypothesis is
+  therefore still untested: the next step is bin-averaging plus a larger test set.
 
 ## Interactive dashboard
 
@@ -108,6 +125,7 @@ for each star you pick.
 | 🌌 **Overview** | Plain-language intro to transits, the planet-vs-false-positive task and phase folding, headline stats (dataset size, class balance, CNN vs baseline ROC-AUC), a schematic transit plot, and a pipeline diagram (Kepler data → labels → preprocessing → split → CNN / baseline → evaluation). |
 | 🔭 **Explore a light curve** | Pick any of the 426 held-out test stars (filter by class, or 🎲 pick a random one). Shows the global view (one full orbit) with the baseline's best box shaded, the zoomed local view, the true NASA disposition, the CNN's probability on a confidence gauge with a clear planet / false-positive verdict, and the baseline's box-fit SNR. Three tabs add motion and context: an **animated phase-folding** demo, an **animated box sweep** of the baseline over box widths 5–41 (with SNR per width), and histograms showing where this star's scores sit in the whole test set. Links to the star's NASA Exoplanet Archive page. |
 | 📊 **Model vs baseline** | Comparison table (ROC-AUC, PR-AUC, precision, recall, F1) for the 5-seed CNN, the deployed `model.pth`, the baseline, and random guessing. Includes bar charts with ±std error bars and chance lines, plus ROC and precision-recall curves recomputed live from `model.pth` on the test set. |
+| 🛰️ **All-quarters pilot** | The 200-star experiment that stitches every Kepler quarter. KPI tiles and a results table for the pilot CNN and baseline, plus a **forest plot** of every model's ROC-AUC with its 95 % sampling interval so the 30-star test set's uncertainty is visible. Pick any pilot test star to see its all-quarters global and local views overlaid on its single-quarter curve, with the baseline SNR computed live. A final panel measures the out-of-transit noise of the all-quarters vs single-quarter curves for the ~190 stars in both datasets. |
 | 🧠 **CNN architecture** | A layer-by-layer diagram of `TransitCNN` from the 1×201 input to P(planet), with output shapes measured from the loaded network and parameter counts (13,057 total). Also a chart of length shrinking as channels grow, plain-language cards on convolutions, pooling and the classifier, and **live feature-map heatmaps** showing what each conv block responds to for the selected star. |
 | 🧪 **Try any star** *(experimental)* | Enter any KIC id. Period and epoch auto-fill from the KOI table, or you can type them. The app downloads the light curve live from MAST, runs the same preprocessing as training (remove NaNs → normalise → flatten → phase-fold → resample to 201) and classifies it. It warns you if the star is already in the training data. If MAST is slow or unavailable you get a friendly error. |
 

@@ -8,7 +8,8 @@ How this file is organised (top to bottom):
     1. Design tokens (colours) + global CSS + a shared Plotly styling helper
     2. Cached loaders: dataset, model, results JSON, whole-test-set scores
     3. Reusable chart builders (light curve, gauge, animations, ...)
-    4. One function per page: overview, explore, compare, architecture, try-any-star
+    4. One function per page: overview, explore, compare, all-quarters pilot,
+       architecture, try-any-star
     5. Navigation (sidebar) - wires the page functions together
 
 All the maths (CNN, normalisation, box-SNR baseline, light-curve folding) lives in
@@ -27,6 +28,7 @@ import streamlit as st
 from model import (
     BOX_WIDTHS,
     L_GLOBAL,
+    auc_ci,
     box_snr,
     box_snr_per_width,
     compute_scale,
@@ -35,6 +37,7 @@ from model import (
     load_model,
     make_global_view,
     predict_proba,
+    view_noise,
 )
 from plotly.subplots import make_subplots
 from sklearn.metrics import (
@@ -52,6 +55,7 @@ ROOT = Path(__file__).resolve().parent.parent      # repo root (dashboard/..)
 DATASET = ROOT / "dataset.npz"
 WEIGHTS = ROOT / "model.pth"
 KOI_TABLE = ROOT / "koi_table.csv"
+PILOT_DATASET = ROOT / "dataset_all_quarters.npz"   # 200-star, all-quarters pilot
 
 st.set_page_config(
     page_title="Exo-Detect · Kepler transit classifier",
@@ -517,8 +521,9 @@ def page_overview() -> None:
                  f"<div class='d'>{desc}</div><div class='s'>{s}</div></div>")
     st.markdown(html + "</div>", unsafe_allow_html=True)
     st.write("")
-    st.info("Use the sidebar to explore individual stars, compare the two models, look inside "
-            "the CNN, or try a star straight from the Kepler archive.", icon="🧭")
+    st.info("Use the sidebar to explore individual stars, compare the two models, see the "
+            "all-quarters pilot, look inside the CNN, or try a star straight from the Kepler "
+            "archive.", icon="🧭")
 
 
 def page_explore() -> None:
@@ -889,6 +894,257 @@ def page_architecture() -> None:
                "Pick a different star on the Explore page and come back to compare.")
 
 
+# ---------------------------------------------------------------------------
+# All-quarters pilot: loaders + page
+# ---------------------------------------------------------------------------
+# The pilot (dataset/build_dataset_all_quarters.py) re-builds 200 stars from EVERY
+# Kepler quarter (~4 years) stitched together, instead of a single ~90-day quarter.
+@st.cache_data(show_spinner="Loading all-quarters pilot...")
+def load_pilot() -> dict[str, np.ndarray] | None:
+    """Arrays from dataset_all_quarters.npz, or None if the file isn't present."""
+    if not PILOT_DATASET.exists():
+        return None
+    with np.load(PILOT_DATASET) as d:
+        return {k: d[k] for k in d.files}
+
+
+@st.cache_data
+def load_pilot_results() -> dict:
+    """Metrics for the pilot and for the two single-quarter CNNs it is compared to."""
+    return {
+        "pilot": _read_json(ROOT / "results" / "cnn_results_all_quarters.json"),
+        "dual": _read_json(ROOT / "results" / "cnn_results.json"),
+        "glob": _read_json(ROOT / "results" / "cnn_results_without_local_view.json"),
+    }
+
+
+def _all_splits(d: dict[str, np.ndarray], key: str) -> np.ndarray:
+    """Concatenate train + val + test arrays of one kind (X, y, meta, ...)."""
+    return np.concatenate([d[f"{key}_{s}"] for s in ("train", "val", "test")])
+
+
+@st.cache_data(show_spinner="Matching pilot stars to the single-quarter dataset...")
+def single_vs_all_quarters() -> pd.DataFrame | None:
+    """For every pilot star that also exists in the main (single-quarter) dataset,
+    measure the out-of-transit noise of both global views. Both datasets use the
+    same catalog period/epoch, so the curves differ only in how much data was folded."""
+    pilot = load_pilot()
+    if pilot is None:
+        return None
+    main = load_dataset()
+    Xm, mm = _all_splits(main, "X"), _all_splits(main, "meta")
+    Xp, mp, yp = _all_splits(pilot, "X"), _all_splits(pilot, "meta"), _all_splits(pilot, "y")
+    where = {int(k): i for i, k in enumerate(mm[:, 0])}
+    rows = []
+    for i, k in enumerate(mp[:, 0]):
+        j = where.get(int(k))
+        if j is not None:
+            rows.append({"kepid": int(k), "label": int(yp[i]),
+                         "noise_single": view_noise(Xm[j]), "noise_all": view_noise(Xp[i])})
+    df = pd.DataFrame(rows)
+    df["ratio"] = df["noise_all"] / df["noise_single"]
+    return df
+
+
+def single_quarter_view(kepid: int) -> np.ndarray | None:
+    """The single-quarter global view of a star from the main dataset, if it has one."""
+    main = load_dataset()
+    ids = _all_splits(main, "meta")[:, 0].astype(int)
+    hit = np.flatnonzero(ids == kepid)
+    return _all_splits(main, "X")[hit[0]] if hit.size else None
+
+
+def page_pilot() -> None:
+    hero("Pilot experiment", "What if we fold every Kepler quarter?",
+         "The headline model folds a single ~90-day quarter per star. This pilot stitches "
+         "all available quarters (~4 years) for 200 stars to test whether more transits "
+         "per fold improves the classifier.")
+    pilot, res = load_pilot(), load_pilot_results()
+    if pilot is None or res["pilot"] is None:
+        st.warning("The pilot files (dataset_all_quarters.npz and "
+                   "results/cnn_results_all_quarters.json) were not found. Build them with "
+                   "dataset/build_dataset_all_quarters.py and CNN/train_cnn_all_quarters.py.",
+                   icon="📂")
+        return
+
+    d = load_dataset()
+    y, meta = pilot["y_test"], pilot["meta_test"]
+    n_pos, n_neg = int(y.sum()), int((y == 0).sum())
+    pc, pb = res["pilot"]["cnn"], res["pilot"]["baseline"]
+    n_train, n_val = len(pilot["y_train"]), len(pilot["y_val"])
+    auc = pc["roc_auc"]["mean"]
+    se, lo, hi = auc_ci(auc, n_pos, n_neg)
+
+    kpi_row([
+        kpi("Pilot stars", f"{n_train + n_val + len(y)}",
+            f"{n_train} train · {n_val} val · {len(y)} test", C["flux"]),
+        kpi("Pilot CNN ROC-AUC", f"{auc:.3f}",
+            f"± {pc['roc_auc']['std']:.3f} across 5 seeds (dual-view)", C["cnn"]),
+        kpi("95% sampling interval", f"{lo:.2f} – {hi:.2f}",
+            f"only {len(y)} test stars ({n_pos} + {n_neg})", C["fp"]),
+        kpi("Pilot baseline ROC-AUC", f"{pb['roc_auc']:.3f}",
+            "box-fit SNR, same 30 stars", C["baseline"]),
+    ])
+    st.write("")
+    st.warning(
+        f"**Read this as a promising signal, not a result.** The seed spread (± "
+        f"{pc['roc_auc']['std']:.3f}) only reflects training randomness on one fixed test "
+        f"set. With just {len(y)} test stars, the AUC itself could easily land anywhere in "
+        f"{lo:.2f} – {hi:.2f}, which overlaps the single-quarter models.", icon="⚠️")
+
+    # --- results: table + forest plot ---------------------------------------------
+    st.markdown("### Results")
+    metrics = [("ROC-AUC", "roc_auc"), ("PR-AUC", "pr_auc"), ("Precision", "precision"),
+               ("Recall", "recall"), ("F1", "f1"), ("Validation ROC-AUC", "val_roc_auc")]
+    rows = []
+    for name, k in metrics:
+        rows.append({"Metric": name,
+                     "Dual-view CNN (pilot, mean ± std)":
+                         f"{pc[k]['mean']:.3f} ± {pc[k]['std']:.3f}",
+                     "Box-SNR baseline (pilot)": f"{pb[k]:.3f}" if k in pb else "-"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    # Forest plot: every ROC-AUC with its 95% sampling interval, on one axis.
+    main_y = d["y_test"]
+    main_pos, main_neg = int(main_y.sum()), int((main_y == 0).sum())
+    base_main = load_results()["baseline"]
+    entries = []   # (label, auc, n_pos, n_neg, colour, symbol)
+    if base_main:
+        entries.append(("Baseline · single quarter", base_main["roc_auc"], main_pos, main_neg,
+                        C["baseline"], "circle-open"))
+    if res["glob"]:
+        entries.append(("CNN global · single quarter (final)",
+                        res["glob"]["cnn"]["roc_auc"]["mean"], main_pos, main_neg,
+                        C["cnn"], "circle-open"))
+    if res["dual"]:
+        entries.append(("CNN dual-view · single quarter",
+                        res["dual"]["cnn"]["roc_auc"]["mean"], main_pos, main_neg,
+                        C["cnn"], "circle-open"))
+    entries.append(("Baseline · all-quarters pilot", pb["roc_auc"], n_pos, n_neg,
+                    C["baseline"], "circle"))
+    entries.append(("CNN dual-view · all-quarters pilot", auc, n_pos, n_neg, C["cnn"], "circle"))
+
+    fig = go.Figure()
+    for label, a, npos, nneg, col, sym in entries:
+        _, ci_lo, ci_hi = auc_ci(a, npos, nneg)
+        fig.add_trace(go.Scatter(
+            x=[a], y=[label], mode="markers", name=label,
+            marker=dict(size=13, color=col, symbol=sym, line=dict(width=2, color=col)),
+            error_x=dict(type="data", symmetric=False, array=[ci_hi - a], arrayminus=[a - ci_lo],
+                         color=col, thickness=2, width=7),
+            hovertemplate=f"{label}<br>ROC-AUC {a:.3f}<br>95% interval {ci_lo:.2f} – {ci_hi:.2f}"
+                          f"<br>test stars {npos + nneg}<extra></extra>"))
+    fig.add_vline(x=0.5, line=dict(color=C["chance"], dash="dash"),
+                  annotation_text="random guess", annotation_font_color=C["text2"],
+                  annotation_position="top")
+    style(fig, 330, title=dict(text="ROC-AUC with 95% sampling interval", font=dict(size=15)),
+          showlegend=False, margin=dict(l=10, r=10, t=50, b=10))
+    fig.update_xaxes(range=[0, 1], title="ROC-AUC (higher is better)")
+    fig.update_yaxes(autorange="reversed")
+    show(fig, key="forest")
+    st.markdown(
+        "<div class='caption'>Open markers = single-quarter models (426 test stars, narrow "
+        "intervals). Filled markers = all-quarters pilot (30 test stars, wide intervals). "
+        "The intervals are Hanley–McNeil approximations from test-set size alone.</div>",
+        unsafe_allow_html=True)
+
+    # --- inspect a pilot test star ------------------------------------------------------
+    st.markdown("### Inspect a pilot test star")
+
+    def label(i: int) -> str:
+        return f"KIC {int(meta[i, 0])} · {CLASS_NAME[int(y[i])]} · P = {meta[i, 1]:.2f} d"
+
+    i = st.selectbox("Pilot test star", list(range(len(y))), format_func=label, key="pilot_star")
+    glob, loc = pilot["X_test"][i], pilot["Xl_test"][i]
+    kepid, period = int(meta[i, 0]), float(meta[i, 1])
+    single = single_quarter_view(kepid)
+    per_w = box_snr_per_width(glob)
+    best_w = max(per_w, key=lambda w: per_w[w]["snr"])
+    snr = box_snr(glob)
+    noise_txt = f"{view_noise(glob) * 1e6:,.0f} ppm"
+    if single is not None:
+        noise_txt = f"{noise_txt} vs {view_noise(single) * 1e6:,.0f} ppm"
+    kpi_row([
+        kpi("True disposition", CLASS_NAME[int(y[i])], f"KIC {kepid}", CLASS_COLOR[int(y[i])]),
+        kpi("Baseline SNR (all quarters)", f"{snr:.2f}", f"best box = {best_w} bins",
+            C["baseline"]),
+        kpi("Baseline SNR (single quarter)",
+            f"{box_snr(single):.2f}" if single is not None else "n/a",
+            "same star, main dataset" if single is not None else "not in the main dataset",
+            C["muted"]),
+        kpi("Noise σ: all vs single", noise_txt, "robust out-of-transit scatter", C["flux"]),
+    ])
+    st.write("")
+    a, b = st.columns([2.2, 1])
+    with a:
+        fig = go.Figure()
+        if single is not None:
+            fig.add_trace(go.Scatter(
+                x=PHASE, y=single, mode="lines", name="single quarter",
+                line=dict(color=C["muted"], width=1.5),
+                hovertemplate="phase %{x:.3f}<br>%{y:.5f}<extra>single quarter</extra>"))
+        fig.add_trace(go.Scatter(
+            x=PHASE, y=glob, mode="lines", name="all quarters",
+            line=dict(color=C["flux"], width=2.2),
+            hovertemplate="phase %{x:.3f}<br>%{y:.5f}<extra>all quarters</extra>"))
+        r = per_w[best_w]
+        fig.add_vrect(x0=PHASE[r["lo"]], x1=PHASE[r["hi"] - 1], fillcolor=C["baseline"],
+                      opacity=0.15, line_width=0)
+        fig.add_hline(y=1.0, line=dict(color=C["muted"], dash="dot", width=1))
+        style(fig, 340, title=dict(text=f"Global view (P = {period:.3f} d)",
+                                   font=dict(size=15)), hovermode="x unified")
+        fig.update_xaxes(title="orbital phase (transit at 0)")
+        fig.update_yaxes(title="normalised flux", tickformat=".4f")
+        show(fig, key="pilot_glob")
+    with b:
+        show(lightcurve_fig(loc, np.linspace(-1, 1, loc.size), "Local view (61 points)",
+                            "zoom window (±3 transit durations)", height=340),
+             key="pilot_loc")
+    st.markdown(
+        "<div class='caption'>Purple band = the baseline's best box. The pilot CNNs were "
+        "trained by CNN/train_cnn_all_quarters.py, which does not save weights, so there is "
+        "no live CNN prediction on this page; the baseline is computed live.</div>",
+        unsafe_allow_html=True)
+
+    # --- did stitching reduce noise? --------------------------------------------------------
+    st.markdown("### Did stitching more quarters reduce the noise?")
+    tbl = single_vs_all_quarters()
+    if tbl is None or tbl.empty:
+        st.info("No pilot stars overlap the main dataset, so a direct comparison isn't possible.")
+        return
+    med = float(tbl["ratio"].median())
+    better = float((tbl["ratio"] < 1).mean())
+    fig = go.Figure(go.Histogram(
+        x=tbl["ratio"], nbinsx=40,
+        marker=dict(color=C["flux"], line=dict(color=C["bg"], width=1)),
+        hovertemplate="noise ratio %{x:.2f}<br>%{y} stars<extra></extra>"))
+    fig.add_vline(x=1.0, line=dict(color=C["text2"], dash="dash"),
+                  annotation_text="no change", annotation_font_color=C["text2"])
+    style(fig, 300, showlegend=False, title=dict(
+        text=f"Noise ratio, all quarters ÷ single quarter ({len(tbl)} stars)",
+        font=dict(size=15)))
+    fig.update_xaxes(title="< 1 means stitching reduced the noise", range=[0, 3])
+    fig.update_yaxes(title="stars")
+    a, b = st.columns([1.6, 1])
+    with a:
+        show(fig, key="noise_hist")
+    with b:
+        st.metric("Median noise ratio", f"{med:.2f}")
+        st.metric("Stars with lower noise", f"{better:.0%}")
+    st.info(
+        "If extra quarters cleaned up the folded curve, this ratio would sit well below 1. "
+        "It does not, so the pilot's higher score cannot be credited to lower per-point noise "
+        "in the 201-point view. The likely reason is how the view is built: "
+        "dataset/build_dataset_all_quarters.py resamples with np.interp, which reads "
+        "roughly one noisy point per phase bin instead of averaging them. A one-star check "
+        "on Kepler-8 (KIC 6922244) supports this: stitching raised the points per bin "
+        "from ~2 to ~325, yet the interpolated view's noise stayed at ~1.6e-4 (single "
+        "quarter: ~1.4e-4), while a bin-average of the same points gives ~1.3e-5, about "
+        "11x lower. Switching the folding step to bin-averaging should therefore unlock "
+        "the benefit of the extra quarters.",
+        icon="🔬")
+
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_star(kepid: int, period: float, epoch: float):
     """Cached wrapper so repeated clicks don't re-download from MAST."""
@@ -1008,6 +1264,7 @@ def main() -> None:
         st.Page(page_overview, title="Overview", icon="🌌", url_path="overview", default=True),
         st.Page(page_explore, title="Explore a light curve", icon="🔭", url_path="explore"),
         st.Page(page_compare, title="Model vs baseline", icon="📊", url_path="compare"),
+        st.Page(page_pilot, title="All-quarters pilot", icon="🛰️", url_path="pilot"),
         st.Page(page_architecture, title="CNN architecture", icon="🧠", url_path="architecture"),
         st.Page(page_try, title="Try any star (beta)", icon="🧪", url_path="try"),
     ]

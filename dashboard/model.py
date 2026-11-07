@@ -4,13 +4,15 @@ This module holds everything that *computes* something, so ``app.py`` can stay
 focused on layout and charts:
 
 1. ``TransitCNN``      - the 1D CNN, layer-for-layer identical to the one trained in
-                         ``train_cnn_without_local_view.py`` / ``sagemaker/train.py``.
+                         ``CNN/train_cnn_without_local_view.py`` / ``sagemaker/train.py``.
                          It must match exactly, or ``model.pth`` will not load.
 2. Normalisation      - ``normalize()`` applies the same (x - 1) / scale transform
                          used during training.
-3. ``box_snr()``       - the classical baseline from ``baseline_bls.py``: a box-shaped
+3. ``box_snr()``       - the classical baseline from ``baseline/baseline_bls.py``: a box-shaped
                          dip detector scored by signal-to-noise.
-4. ``make_global_view()`` - the same light-curve preprocessing as ``build_dataset.py``,
+4. ``auc_ci()`` / ``view_noise()`` - helpers for the all-quarters pilot page
+                         (AUC sampling uncertainty; per-view noise measurement).
+5. ``make_global_view()`` - the same light-curve preprocessing as ``dataset/build_dataset.py``,
                          used by the experimental "Try any star" page.
 
 Nothing here imports Streamlit, so it can also be used from a notebook or a test.
@@ -131,7 +133,7 @@ def conv_activations(model: TransitCNN, x: np.ndarray, scale: float) -> list[np.
 
 
 # ---------------------------------------------------------------------------
-# 3. Classical baseline: box-fit SNR (same maths as baseline_bls.py)
+# 3. Classical baseline: box-fit SNR (same maths as baseline/baseline_bls.py)
 # ---------------------------------------------------------------------------
 def box_snr_per_width(row: np.ndarray) -> dict[int, dict[str, float]]:
     """For each box width, measure how deep the centred dip is relative to noise.
@@ -159,7 +161,37 @@ def box_snr(row: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 4. Light-curve preprocessing (same steps as build_dataset.make_views)
+# 3b. Helpers for judging the all-quarters pilot
+# ---------------------------------------------------------------------------
+def auc_ci(auc: float, n_pos: int, n_neg: int, z: float = 1.96) -> tuple[float, float, float]:
+    """Approximate confidence interval for a ROC-AUC (Hanley & McNeil, 1982).
+
+    The seed-to-seed std only measures *training* randomness on one fixed test set.
+    This measures how much the AUC itself would move if we had drawn a different
+    test set of the same size - the dominant uncertainty when n_test is small.
+    Returns (standard_error, low, high).
+    """
+    q1 = auc / (2 - auc)
+    q2 = 2 * auc**2 / (1 + auc)
+    var = (auc * (1 - auc) + (n_pos - 1) * (q1 - auc**2)
+           + (n_neg - 1) * (q2 - auc**2)) / (n_pos * n_neg)
+    se = float(np.sqrt(max(var, 0.0)))
+    return se, max(0.0, auc - z * se), min(1.0, auc + z * se)
+
+
+def view_noise(row: np.ndarray) -> float:
+    """Robust point-to-point noise of a global view, measured away from the transit.
+
+    Uses 1.4826 * MAD of the flux outside the widest baseline box (+/-20 bins around
+    the centre), so the transit itself does not inflate the estimate.
+    """
+    half = max(BOX_WIDTHS) // 2
+    outside = np.concatenate([row[: CENTER - half], row[CENTER + half + 1:]])
+    return 1.4826 * float(np.median(np.abs(outside - np.median(outside))))
+
+
+# ---------------------------------------------------------------------------
+# 4. Light-curve preprocessing (same steps as dataset/build_dataset.make_views)
 # ---------------------------------------------------------------------------
 def fold_to_global_view(time: np.ndarray, flux: np.ndarray, period: float,
                         epoch: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

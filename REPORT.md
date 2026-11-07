@@ -14,9 +14,11 @@ chance (ROC-AUC ≈ 0.42). A dual-view variant that adds a high-resolution
 with a train-vs-validation loss plateau — indicates the system is limited by the
 signal-to-noise of single-quarter light curves rather than by model capacity.
 A follow-up pilot that stitches every available Kepler quarter (~4 years) for
-200 stars supports this reading: a dual-view CNN reaches ROC-AUC 0.763 ± 0.038
-while training on only 139 stars, although the pilot's 30-star test set is too
-small (≈ ±0.17 at 95 % confidence) for the gain to be considered established.
+200 stars gives a dual-view CNN ROC-AUC of 0.763 ± 0.038 while training on only
+139 stars, but the pilot's 30-star test set is too small (≈ ±0.17 at 95 %
+confidence) for that to be established, and a diagnostic shows the pilot's folded
+curves are not measurably less noisy because the resampling step interpolates
+instead of averaging. The signal-to-noise hypothesis therefore remains untested.
 Training is operationalized as a reproducible, infrastructure-as-code pipeline on
 AWS SageMaker, and the results are explored through an interactive Streamlit
 dashboard.
@@ -169,7 +171,29 @@ Hanley–McNeil approximation), so the 0.763 and the earlier 0.66 (n = 426)
 cannot be separated statistically. The reported ± 0.038 is the spread across
 training seeds on one fixed test set; it does not include this sampling
 uncertainty. The baseline's 0.30 carries a similar uncertainty. The pilot is
-therefore best read as an encouraging, directionally consistent result.
+therefore best read as an encouraging but inconclusive result.
+
+### 4.2 Diagnostic: stitching did not reduce the folded-curve noise
+
+If the pilot's higher score came from a higher signal-to-noise ratio, the
+stitched views should be visibly quieter than the single-quarter ones. They are
+not. For the 192 pilot stars that also exist in the single-quarter dataset (same
+catalog period and epoch), the robust out-of-transit noise of the 201-point
+global view (1.4826 × MAD outside the widest baseline box) has a median
+all-quarters ÷ single-quarter ratio of **1.03**, and only 40 % of stars improved.
+
+The explanation is in the folding step. Both dataset builders resample the folded
+points onto the 201-point grid with `np.interp`, which linearly interpolates
+between neighbouring points and therefore reads roughly one noisy sample per
+bin; extra quarters add more points to choose from but do not average them. A
+one-star check on Kepler-8 (KIC 6922244) is consistent with this: stitching raised
+the number of points per phase bin from about 2 to about 325, yet the
+interpolated view's noise stayed at ≈1.6 × 10⁻⁴ (single quarter ≈1.4 × 10⁻⁴),
+while averaging the points within each bin gave ≈1.3 × 10⁻⁵, roughly 11× lower.
+This was a single star, not a systematic test, but it identifies a concrete fix.
+Whatever produced the pilot's higher AUC, it was therefore not a cleaner
+201-point curve, and the full signal-to-noise benefit of stitching is still
+unrealised.
 
 ## 5. Analysis
 
@@ -191,15 +215,15 @@ accuracy and markedly higher variance. This is a genuine negative result: the
 technique that works in the literature depends on the high signal-to-noise of
 all-quarters folds, which this single-quarter dataset lacks.
 
-The all-quarters pilot (Section 4.1) is the first test of this explanation. A
-dual-view model on stitched light curves scores higher than the single-quarter
-dual-view model, which is what the signal-to-noise account predicts. It does not
-prove it: the pilot used a different (and tiny) test set, and no global-view-only
-model was run on the all-quarters data, so the improvement cannot yet be split
-between "more quarters" and "the local view finally helping". The pilot also
-changes the training-set size by an order of magnitude, which makes the result
-more notable (a model trained on 139 stars matches or beats one trained on
-~1,985), but not conclusive.
+The all-quarters pilot (Sections 4.1 and 4.2) was meant as the first test of this
+explanation, and it does not yet settle it. A dual-view model on stitched light
+curves scores higher than the single-quarter dual-view model, but the pilot used
+a different and tiny test set (about ±0.17 AUC sampling uncertainty), no
+global-view-only model was run on the all-quarters data, and, most importantly,
+the stitched views are not measurably less noisy than the single-quarter ones
+(Section 4.2). Because the folding step interpolates instead of averaging, the
+extra quarters have not actually been converted into a higher signal-to-noise
+ratio, so the experiment has not yet tested the hypothesis it was designed for.
 
 **The ceiling is data-limited, not model-limited.** Training and validation loss
 plateau together around 0.59 (versus 0.69 for random guessing), and the most
@@ -270,12 +294,14 @@ reported number can be regenerated independently.
 
 ## 8. Future Work
 
-- **Scale up all-quarters stitching.** The 200-star pilot suggests this is the
-  most promising lever. Next steps: build the all-quarters dataset for the full
-  ~3,000-star pool (or at least enough stars for a test set of several hundred,
-  which narrows the AUC uncertainty to a few points), run the global-view-only
-  and dual-view models on the *same* split to isolate the local view's
-  contribution, then retrain and deploy the winner in the dashboard.
+- **Bin-average the fold, then re-test all-quarters stitching.** Replace the
+  `np.interp` resampling with a per-bin mean (or median) of the folded points, and
+  confirm the noise ratio in Section 4.2 drops well below 1. Then build the
+  all-quarters dataset for the full ~3,000-star pool (or at least enough stars for
+  a test set of several hundred, which narrows the AUC uncertainty to a few
+  points), run the global-view-only and dual-view models on the *same* split to
+  isolate the local view's contribution, and deploy the winner in the dashboard.
+  Bin-averaging could also help the single-quarter pipeline.
 - **Better uncertainty reporting.** Add bootstrap confidence intervals over test
   stars alongside the seed std, so small-test-set results are not over-read.
 - **Richer labels and architectures.** Incorporating `CANDIDATE` objects under a
@@ -291,9 +317,10 @@ evaluation — validation-based model selection, multi-seed reporting,
 threshold-free metrics — shows that the learned advantage is real and that the
 remaining ceiling is set by data signal-to-noise rather than model capacity, a
 conclusion reinforced by the dual-view negative result. A pilot that stitches all
-Kepler quarters (ROC-AUC 0.763 ± 0.038 on a 30-star test set) points the same
-way, but is too small to be conclusive and is the obvious next experiment to
-scale. The work is wrapped in a reproducible, infrastructure-as-code training
+Kepler quarters (ROC-AUC 0.763 ± 0.038 on a 30-star test set) is encouraging but
+inconclusive: the test set is tiny and the folding step does not yet average the
+extra data, so the hypothesis still needs a bin-averaged, larger-scale re-run.
+The work is wrapped in a reproducible, infrastructure-as-code training
 pipeline on AWS and an interactive dashboard, bridging the machine-learning,
 cloud-engineering and product sides of the problem.
 
