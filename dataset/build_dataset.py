@@ -25,7 +25,7 @@ TAP = ("https://exoplanetarchive.ipac.caltech.edu/TAP/sync?query="
        "select+kepid,koi_disposition,koi_period,koi_time0bk,koi_duration+"
        "from+cumulative&format=csv")
 
-KOI_CACHE = "koi_table.csv"
+KOI_CACHE = "../koi_table.csv"
 
 def load_koi():
     if os.path.exists(KOI_CACHE):                 # use the saved snapshot if we have it
@@ -139,8 +139,8 @@ i_tmp, i_test = train_test_split(idx, test_size=0.15, stratify=y, random_state=4
 i_train, i_val = train_test_split(i_tmp, test_size=0.1765, stratify=y[i_tmp], random_state=42)
 
 # global view keeps the name X_* (so baseline_bls.py runs unchanged); local view is Xl_*
-np.savez("dataset_test.npz",
+np.savez("../dataset.npz",
          X_train=Xg[i_train], Xl_train=Xl[i_train], y_train=y[i_train], meta_train=meta[i_train],
          X_val=Xg[i_val],     Xl_val=Xl[i_val],     y_val=y[i_val],     meta_val=meta[i_val],
          X_test=Xg[i_test],   Xl_test=Xl[i_test],   y_test=y[i_test],   meta_test=meta[i_test])
-print("Saved dataset_test.npz | train/val/test:", len(i_train), len(i_val), len(i_test))
+print("Saved dataset.npz | train/val/test:", len(i_train), len(i_val), len(i_test))

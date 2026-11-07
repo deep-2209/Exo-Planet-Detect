@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.metrics import (average_precision_score, roc_auc_score,
                              precision_score, recall_score, f1_score)
 
-d = np.load("dataset.npz")
+d = np.load("../dataset.npz")
 X_val, y_val = d["X_val"], d["y_val"]
 X_test, y_test = d["X_test"], d["y_test"]
 
@@ -49,5 +49,5 @@ results = {
     "n_test": int(len(y_test)),
 }
 print(json.dumps(results, indent=2))
-with open("results/baseline_results.json", "w") as f:
+with open("../results/baseline_results.json", "w") as f:
     json.dump(results, f, indent=2)

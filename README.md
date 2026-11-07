@@ -27,6 +27,33 @@ The CNN clearly separates planets from false positives, while the depth-only
 classical baseline performs at chance — showing the model learns transit
 *shape*, not just dip depth.
 
+### Pilot: stitching all Kepler quarters
+
+To test whether the single-quarter ceiling is a signal-to-noise problem, the
+pipeline was re-run on a **small pilot set of 200 stars (100 planets / 100 false
+positives) using every available long-cadence quarter (~4 years, up to 17
+quarters) stitched per star** before phase-folding (train / val / test =
+139 / 31 / 30).
+
+| Model (all-quarters pilot)               | ROC-AUC       | PR-AUC        | n_test |
+|------------------------------------------|---------------|---------------|--------|
+| Classical box-fit baseline               | 0.30          | 0.40          | 30     |
+| 1D CNN — global + local view             | 0.763 ± 0.038 | 0.784 ± 0.040 | 30     |
+
+*Mean ± std over 5 seeds; validation ROC-AUC 0.723 ± 0.056. Precision 0.59,
+recall 0.96, F1 0.73 at the validation-tuned threshold.*
+
+**Read this as a promising signal, not a new headline number.** The point
+estimate is higher than the single-quarter dual-view model (0.66), even though
+it was trained on ~14× fewer stars — consistent with the idea that more folded
+transits means cleaner shape. But the test set is only **30 stars**: the seed
+std (±0.04) captures training randomness only, while the sampling uncertainty
+of an AUC on 15 + 15 stars is about **±0.17 (95 %)**. The pilot's test set also
+differs from the 426-star one, and no global-view-only all-quarters run exists
+yet, so the gain cannot be attributed to the local view versus the extra
+quarters. The headline result and the dashboard's `model.pth` remain the
+single-quarter global-view model, which was evaluated on 426 stars.
+
 ## Problem
 
 Kepler's pipeline flagged threshold-crossing events, and human/automated vetting
@@ -47,6 +74,9 @@ Kepler Objects of Interest (KOI) `koi_disposition` as ground-truth labels.
 - **Model:** a 1D CNN (3 conv blocks → global average pool → sigmoid), trained
   with early stopping, dropout, weight decay, and light augmentation
   (time-flip, phase-shift, noise).
+- **All-quarters option:** `dataset/build_dataset_all_quarters.py` downloads every
+  quarter per star, stitches them, then flattens and folds — more transits per
+  fold, but ~1–2 min per star, so the pilot is limited to 200 stars.
 - **Evaluation:** star-level stratified 70/15/15 split, 5 seeds, metrics
   reported as mean ± std. Threshold-free AUCs are the headline metrics.
 
@@ -61,6 +91,10 @@ Kepler Objects of Interest (KOI) `koi_disposition` as ground-truth labels.
 - Performance plateaus around ROC-AUC 0.69 with train ≈ validation loss, and a
   principled architectural change didn't move it — indicating the ceiling is
   **data/SNR-limited, not model-capacity-limited.**
+- **Early evidence for that hypothesis:** with all quarters stitched, a
+  dual-view CNN trained on just 139 stars reaches ROC-AUC 0.763 ± 0.038 on a
+  30-star pilot test set (vs 0.66 single-quarter). The test set is too small to
+  call this conclusive (≈ ±0.17 at 95 %); a larger all-quarters run is the next step.
 
 ## Interactive dashboard
 
@@ -83,7 +117,9 @@ uses the decision threshold that maximises F1 on the **validation** set (≈ 0.4
 for `model.pth`), the same rule training used. It isn't 0.5 because this model's
 probabilities are compressed (test-set max ≈ 0.60), so 0.5 would call almost
 everything a false positive. The baseline uses the box-fit SNR from
-`baseline_bls.py`.
+`baseline/baseline_bls.py`. The dashboard and "Try any star" use the
+single-quarter preprocessing that `model.pth` was trained on; an all-quarters
+model is not deployed yet.
 
 **Deployed model vs headline numbers.** `model.pth` is the single SageMaker run
 (test ROC-AUC 0.629, PR-AUC 0.566). The Results table above reports the 5-seed
@@ -154,9 +190,17 @@ SageMaker Python SDK / boto3 (job orchestration) · **Streamlit** + **Plotly**
 ## Repository layout
 
 ```
-build_dataset.py           # fetch Kepler light curves + KOI labels -> phase-folded dataset
-baseline_bls.py            # classical box-fit baseline
-train_cnn.py               # 1D CNN: 5-seed training + evaluation (local)
+dataset/
+  build_dataset.py                # single-quarter Kepler light curves + KOI labels -> dataset.npz
+  build_dataset_all_quarters.py   # all quarters stitched (200-star pilot) -> dataset_all_quarters.npz
+baseline/
+  baseline_bls.py                 # classical box-fit baseline
+  baseline_bls_all_quarters.py    # same baseline on the all-quarters pilot set
+CNN/
+  train_cnn_without_local_view.py # final model: global-view CNN, 5 seeds
+  train_cnn.py                    # dual-view (global + local) CNN, 5 seeds
+  train_cnn_all_quarters.py                    # dual-view CNN on the all-quarters pilot
+  train_cnn_all_quarters_without_local_view.py # global-view CNN on the all-quarters pilot
 launch_sagemaker.py        # SDK launcher: upload data to S3 + run the SageMaker job
 sagemaker/
   train.py                 # SageMaker script-mode training entrypoint
@@ -176,20 +220,32 @@ results/
   cnn_results_without_local_view.json  # final global-view CNN, 5 seeds (headline numbers)
   cnn_results.json                     # dual-view (global + local) experiment, 5 seeds
   baseline_results.json                # classical baseline metrics
+  cnn_results_all_quarters.json        # all-quarters pilot: dual-view CNN + baseline, 5 seeds
+  baseline_results_all_quarters.json   # all-quarters pilot baseline metrics
 CLAUDE.md                  # project conventions + log of major decisions
 pyproject.toml             # dependencies, pinned via uv.lock
 ```
 
-*Generated data (`dataset.npz`, download cache) and Terraform state are
+*Generated data (`dataset*.npz`, download cache) and Terraform state are
 git-ignored.*
 
 ## Reproduce (local)
 
+The scripts in `dataset/`, `baseline/` and `CNN/` use `../` paths, so run each
+one from inside its own folder.
+
 ```bash
 uv sync
-uv run python build_dataset.py   # builds dataset.npz (downloads from MAST — slow on first run)
-uv run python baseline_bls.py    # -> baseline_results.json
-uv run python train_cnn.py       # -> cnn_results.json
+# Single-quarter pipeline (headline results)
+(cd dataset  && uv run python build_dataset.py)                # -> ../dataset.npz (downloads from MAST — slow on first run)
+(cd baseline && uv run python baseline_bls.py)                 # -> ../results/baseline_results.json
+(cd CNN      && uv run python train_cnn_without_local_view.py) # -> ../results/cnn_results_without_local_view.json
+
+# All-quarters pilot (200 stars, ~1–2 min per star to download)
+(cd dataset  && uv run python build_dataset_all_quarters.py)   # -> ../dataset_all_quarters.npz
+(cd baseline && uv run python baseline_bls_all_quarters.py)    # -> ../results/baseline_results_all_quarters.json
+(cd CNN      && uv run python train_cnn_all_quarters.py)       # -> ../results/cnn_results_all_quarters.json
+
 uv run streamlit run dashboard/app.py   # open the interactive dashboard
 ```
 For the cloud training pipeline, see **Cloud training pipeline (AWS)** above.
@@ -204,16 +260,24 @@ For the cloud training pipeline, see **Cloud training pipeline (AWS)** above.
 - [x] **Interactive dashboard**: explore light curves, live CNN predictions,
       CNN vs baseline, architecture, and live MAST lookups (Streamlit + Plotly)
 - [ ] Public deployment of the dashboard (Streamlit Community Cloud)
-- [ ] All-quarters stitching per star for higher signal-to-noise
+- [x] All-quarters stitching: **200-star pilot** (ROC-AUC 0.763 ± 0.038, but only
+      a 30-star test set)
+- [ ] Scale all-quarters to the full ~3,000-star set (or a larger test set), run
+      the global-view-only ablation on it, then retrain and deploy that model
 
 ## Limitations
 
-- **Single quarter per star** and a **short-period bias** (`period < 30 d`):
-  the main lever for higher accuracy is stitching all available quarters
-  (more transits folded → higher SNR) — tracked in the roadmap above.
+- **Headline model uses a single quarter per star** and has a **short-period
+  bias** (`period < 30 d`). Stitching all quarters looks like the main lever for
+  higher accuracy (see the pilot above), but it has only been tried at pilot scale.
+- **The all-quarters pilot is statistically thin.** Its test set has 30 stars, so
+  an AUC carries roughly ±0.17 (95 %) sampling uncertainty that the seed std does
+  not capture, and the pilot has no global-view-only counterpart to isolate the
+  effect of the local view.
 - Labels are NASA's current KOI dispositions (~95% reliable), not absolute truth.
-- Performance is data/SNR-limited rather than model-limited, so architectural
-  changes alone won't lift it much past the current ceiling.
+- With single-quarter inputs, performance is data/SNR-limited rather than
+  model-limited, so architectural changes alone won't lift it much past the
+  current ceiling.
 
 ## Data & acknowledgments
 

@@ -13,8 +13,13 @@ chance (ROC-AUC ≈ 0.42). A dual-view variant that adds a high-resolution
 "local" view of the transit does **not** improve performance, which — together
 with a train-vs-validation loss plateau — indicates the system is limited by the
 signal-to-noise of single-quarter light curves rather than by model capacity.
+A follow-up pilot that stitches every available Kepler quarter (~4 years) for
+200 stars supports this reading: a dual-view CNN reaches ROC-AUC 0.763 ± 0.038
+while training on only 139 stars, although the pilot's 30-star test set is too
+small (≈ ±0.17 at 95 % confidence) for the gain to be considered established.
 Training is operationalized as a reproducible, infrastructure-as-code pipeline on
-AWS SageMaker.
+AWS SageMaker, and the results are explored through an interactive Streamlit
+dashboard.
 
 ## 1. Motivation
 
@@ -67,6 +72,16 @@ successfully processed (the confirmed-planet pool, ~1,611 stars, is the limiting
 class). The set is split **at the star level** into stratified 70/15/15
 train/validation/test partitions (~1,985 / 426 / 426), preserving class balance
 in each.
+
+**All-quarters pilot dataset.** To test the signal-to-noise hypothesis directly,
+a second, much smaller dataset was built with the same labels, filters, views
+and split procedure, but with a different light-curve step: instead of one
+quarter per star, *all* available long-cadence quarters (~4 years, up to 17
+quarters) are downloaded, stitched, flattened and then folded, so each fold
+contains many more transits. Downloading is slow (~1–2 minutes per star), so the
+pilot uses 100 planets and 100 false positives (200 stars, none lost to
+processing), split 139 / 31 / 30 for train / validation / test. As before, the
+normalisation scale is computed from the training split only.
 
 ## 3. Methods
 
@@ -131,6 +146,31 @@ stable margin. The dual-view model, despite being the more sophisticated
 architecture, scored *lower* on validation and with ~6× higher seed variance, so
 the global-only model was selected as final.
 
+### 4.1 All-quarters pilot
+
+| Model (all-quarters pilot)   | ROC-AUC       | PR-AUC        | n_test |
+|------------------------------|---------------|---------------|--------|
+| Classical box-fit baseline   | 0.30          | 0.40          | 30     |
+| 1D CNN — global + local view | 0.763 ± 0.038 | 0.784 ± 0.040 | 30     |
+
+*Mean ± std over 5 seeds. Validation ROC-AUC 0.723 ± 0.056 (n = 31). At the
+validation-tuned threshold the CNN has precision 0.586 ± 0.017, recall
+0.960 ± 0.033 and F1 0.727 ± 0.017; the baseline labels every star a planet
+(precision 0.50, recall 1.0, F1 0.667).*
+
+With every quarter folded, the dual-view CNN's point estimate rises from 0.66 to
+0.76 ROC-AUC, even though its training set shrinks from ~1,985 stars to 139.
+The baseline again lands below chance (0.30), as it did on the larger set (0.42).
+
+**Statistical caveat.** These numbers are far less certain than the main table.
+With 15 planets and 15 false positives in the test set, the sampling standard
+error of an AUC near 0.76 is roughly 0.09 (≈ ±0.17 at 95 % confidence by the
+Hanley–McNeil approximation), so the 0.763 and the earlier 0.66 (n = 426)
+cannot be separated statistically. The reported ± 0.038 is the spread across
+training seeds on one fixed test set; it does not include this sampling
+uncertainty. The baseline's 0.30 carries a similar uncertainty. The pilot is
+therefore best read as an encouraging, directionally consistent result.
+
 ## 5. Analysis
 
 **The CNN learns shape, not just depth.** Both classes were folded on their
@@ -151,13 +191,24 @@ accuracy and markedly higher variance. This is a genuine negative result: the
 technique that works in the literature depends on the high signal-to-noise of
 all-quarters folds, which this single-quarter dataset lacks.
 
+The all-quarters pilot (Section 4.1) is the first test of this explanation. A
+dual-view model on stitched light curves scores higher than the single-quarter
+dual-view model, which is what the signal-to-noise account predicts. It does not
+prove it: the pilot used a different (and tiny) test set, and no global-view-only
+model was run on the all-quarters data, so the improvement cannot yet be split
+between "more quarters" and "the local view finally helping". The pilot also
+changes the training-set size by an order of magnitude, which makes the result
+more notable (a model trained on 139 stars matches or beats one trained on
+~1,985), but not conclusive.
+
 **The ceiling is data-limited, not model-limited.** Training and validation loss
 plateau together around 0.59 (versus 0.69 for random guessing), and the most
 principled architectural change available — the two-view model — failed to move
 the ceiling. Both are strong evidence that performance (~ROC-AUC 0.69) is bounded
 by the information content of the input representation, not by network capacity.
 Further architecture or hyperparameter tuning would not break past this; only
-richer input (notably stitching all available quarters for higher SNR) would.
+richer input (notably stitching all available quarters for higher SNR) is
+expected to, and the pilot points in that direction.
 
 **Why AUC, not F1, is the honest metric.** At this separability, the
 F1-maximizing decision threshold collapses toward predicting "planet" for almost
@@ -189,11 +240,26 @@ custom image to maintain. This is not about needing cloud scale for a small
 model — it demonstrates a reproducible, versioned, auditable training workflow
 that scales directly to larger models and datasets without re-architecting.
 
+The results are also exposed through an **interactive Streamlit + Plotly
+dashboard** (`dashboard/`). It loads the trained `model.pth` once and runs a live
+forward pass for any selected test star, alongside the classical baseline's
+box-fit score, with an animated phase-folding demo, a CNN-versus-baseline
+comparison page, a layer-by-layer architecture view with feature-map heatmaps,
+and an experimental page that fetches any Kepler star from MAST. The dashboard
+serves the single-quarter global-view model (the headline model); the
+all-quarters pilot is not deployed. The code is organised into `dataset/`,
+`baseline/` and `CNN/` folders with one script per experiment, so each
+reported number can be regenerated independently.
+
 ## 7. Limitations
 
-- **Single quarter per star.** Only one Kepler quarter is used per target, which
-  caps the signal-to-noise of the folded light curve and is the primary driver of
-  the performance ceiling.
+- **Single quarter per star in the headline model.** Only one Kepler quarter is
+  used per target, which caps the signal-to-noise of the folded light curve and
+  is the primary driver of the performance ceiling.
+- **All-quarters evidence is pilot-scale.** The stitched-quarter experiment uses
+  200 stars and a 30-star test set, so its AUC has about ±0.17 sampling
+  uncertainty (not reflected in the seed std), and it has no global-view-only
+  ablation, so the effect of the local view is not isolated.
 - **Short-period bias.** The `period < 30 d` filter biases the sample toward
   short-period systems and does not represent the full planet population.
 - **Label reliability.** KOI dispositions are NASA's current best judgments
@@ -204,12 +270,14 @@ that scales directly to larger models and datasets without re-architecting.
 
 ## 8. Future Work
 
-- **All-quarters stitching.** Combining all available quarters per star would
-  substantially increase the number of folded transits and the signal-to-noise —
-  the single most promising lever for higher accuracy, and the condition under
-  which the local view would likely begin to help.
-- **Interactive dashboard.** A tool to browse light curves alongside the model's
-  prediction and the true disposition, for qualitative inspection.
+- **Scale up all-quarters stitching.** The 200-star pilot suggests this is the
+  most promising lever. Next steps: build the all-quarters dataset for the full
+  ~3,000-star pool (or at least enough stars for a test set of several hundred,
+  which narrows the AUC uncertainty to a few points), run the global-view-only
+  and dual-view models on the *same* split to isolate the local view's
+  contribution, then retrain and deploy the winner in the dashboard.
+- **Better uncertainty reporting.** Add bootstrap confidence intervals over test
+  stars alongside the seed std, so small-test-set results are not over-read.
 - **Richer labels and architectures.** Incorporating `CANDIDATE` objects under a
   more nuanced scheme, and exploring sequence models (e.g. transformers) once the
   input SNR justifies added capacity.
@@ -222,9 +290,12 @@ classical depth-based baseline that performs at chance. A careful, honest
 evaluation — validation-based model selection, multi-seed reporting,
 threshold-free metrics — shows that the learned advantage is real and that the
 remaining ceiling is set by data signal-to-noise rather than model capacity, a
-conclusion reinforced by the dual-view negative result. The work is wrapped in a
-reproducible, infrastructure-as-code training pipeline on AWS, bridging the
-machine-learning and cloud-engineering sides of the problem.
+conclusion reinforced by the dual-view negative result. A pilot that stitches all
+Kepler quarters (ROC-AUC 0.763 ± 0.038 on a 30-star test set) points the same
+way, but is too small to be conclusive and is the obvious next experiment to
+scale. The work is wrapped in a reproducible, infrastructure-as-code training
+pipeline on AWS and an interactive dashboard, bridging the machine-learning,
+cloud-engineering and product sides of the problem.
 
 ## 10. References
 
