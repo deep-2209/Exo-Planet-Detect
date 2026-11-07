@@ -8,9 +8,9 @@ reproducible, infrastructure-as-code training pipeline on AWS. An interactive
 **Streamlit dashboard** lets you explore individual stars, watch the model and
 baseline make their calls live, and look inside the network.
 
-<!-- TODO: replace with the Streamlit Community Cloud URL once deployed:
-[![Live demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://<your-app>.streamlit.app) -->
-**Live demo:** *coming soon* · **Run locally:** `uv run streamlit run dashboard/app.py`
+[![Live demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://exo-planet-detect-tuzeozyqyz2fajyw3vsz9v.streamlit.app/)
+
+**Live demo:** <https://exo-planet-detect-tuzeozyqyz2fajyw3vsz9v.streamlit.app/> · **Run locally:** `uv run streamlit run dashboard/app.py`
 
 ## Results
 
@@ -277,7 +277,7 @@ For the cloud training pipeline, see **Cloud training pipeline (AWS)** above.
       SageMaker training with artifacts in S3
 - [x] **Interactive dashboard**: explore light curves, live CNN predictions,
       CNN vs baseline, architecture, and live MAST lookups (Streamlit + Plotly)
-- [ ] Public deployment of the dashboard (Streamlit Community Cloud)
+- [x] **Public deployment** of the dashboard — live on Streamlit Community Cloud
 - [x] All-quarters stitching: **200-star pilot** (ROC-AUC 0.763 ± 0.038, but only
       a 30-star test set)
 - [ ] Scale all-quarters to the full ~3,000-star set (or a larger test set), run
